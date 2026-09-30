@@ -7,7 +7,12 @@ authors = [
     { name = "sourav.sengupta", email = "sourav.sengupta9@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "google-adk>=2.10.0",
+    "pydantic>=2.13.5",
+    "qdrant-client>=1.19.1",
+    "sqlmodel>=0.0.47",
+]
 
 [project.scripts]
 responsive-agentic-rag = "responsive_agentic_rag:main"
@@ -15,3 +20,8 @@ responsive-agentic-rag = "responsive_agentic_rag:main"
 [build-system]
 requires = ["uv_build>=0.12.14,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
