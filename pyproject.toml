@@ -1,0 +1,17 @@
+[project]
+name = "responsive-agentic-rag"
+version = "0.1.0"
+description = "An extensible Agentic RAG platform that ingests knowledge from multiple heterogeneous sources, normalizes and indexes the content, and uses Google ADK-based agents to perform intelligent retrieval and grounded answer generation."
+readme = "README.md"
+authors = [
+    { name = "sourav.sengupta", email = "sourav.sengupta9@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+responsive-agentic-rag = "responsive_agentic_rag:main"
+
+[build-system]
+requires = ["uv_build>=0.12.14,<0.13.0"]
+build-backend = "uv_build"
