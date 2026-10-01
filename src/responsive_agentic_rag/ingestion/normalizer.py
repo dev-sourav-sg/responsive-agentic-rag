@@ -41,7 +41,11 @@ class IngestionNormalizer:
                 source_type=source.source_type,
                 title=source.title,
                 body_text=text,
-                metadata=dict(source.metadata),
+                metadata={
+                    **source.metadata,
+                    "source_type": source.source_type,
+                    "source_location": source.source_location
+                    }
             )
         ]
 
