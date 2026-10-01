@@ -23,7 +23,7 @@ from responsive_agentic_rag.models.knowledge import KnowledgeSource
 )
 def test_embedding_service_uses_configured_model(mock_model_class):
     mock_model = MagicMock()
-    mock_model.get_sentence_embedding_dimension.return_value = 384
+    mock_model.get_embedding_dimension.return_value = 384
     mock_model.encode.return_value = [0.1, 0.2, 0.3]
 
     mock_model_class.return_value = mock_model
@@ -43,7 +43,7 @@ def test_embedding_service_returns_single_embedding(
     mock_model_class,
 ):
     mock_model = MagicMock()
-    mock_model.get_sentence_embedding_dimension.return_value = 384
+    mock_model.get_embedding_dimension.return_value = 384
     mock_model.encode.return_value = MagicMock(
         tolist=lambda: [0.1, 0.2, 0.3]
     )
@@ -71,7 +71,7 @@ def test_embedding_service_returns_multiple_embeddings(
     mock_model_class,
 ):
     mock_model = MagicMock()
-    mock_model.get_sentence_embedding_dimension.return_value = 384
+    mock_model.get_embedding_dimension.return_value = 384
     mock_model.encode.return_value = MagicMock(
         tolist=lambda: [
             [0.1, 0.2],
@@ -113,7 +113,7 @@ def test_embedding_service_returns_dimension(
     mock_model_class,
 ):
     mock_model = MagicMock()
-    mock_model.get_sentence_embedding_dimension.return_value = 384
+    mock_model.get_embedding_dimension.return_value = 384
 
     mock_model_class.return_value = mock_model
 

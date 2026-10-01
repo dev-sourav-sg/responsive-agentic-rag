@@ -19,7 +19,7 @@ class EmbeddingService:
     @property
     def dimension(self) -> int:
         """Return the dimensionality of the embedding model."""
-        return self._model.get_sentence_embedding_dimension()
+        return self._model.get_embedding_dimension()
 
     def embed(self, text: str) -> list[float]:
         """Generate an embedding for a single text."""
