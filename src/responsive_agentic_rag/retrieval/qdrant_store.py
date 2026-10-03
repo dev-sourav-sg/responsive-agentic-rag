@@ -143,6 +143,64 @@ class QdrantVectorStore:
             )
         )
 
+    def get_chunks(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> list[ChunkRecord]:
+        """Retrieve complete chunk records by chunk ID."""
+
+        if not chunk_ids:
+            return []
+
+        point_ids = [
+            self._point_id(chunk_id)
+            for chunk_id in chunk_ids
+        ]
+
+        points = self._client.retrieve(
+            collection_name=self._collection_name,
+            ids=point_ids,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        chunks: list[ChunkRecord] = []
+
+        for point in points:
+            payload = point.payload or {}
+
+            chunks.append(
+                ChunkRecord(
+                    chunk_id=str(payload["chunk_id"]),
+                    source_id=str(payload["source_id"]),
+                    record_id=str(payload["record_id"]),
+                    content=str(payload["content"]),
+                    chunk_index=int(payload["chunk_index"]),
+                    start_offset=payload.get("start_offset"),
+                    end_offset=payload.get("end_offset"),
+                    section_path=payload.get(
+                        "section_path",
+                        [],
+                    ),
+                    token_count=int(
+                        payload.get("token_count", 0)
+                    ),
+                    embedding=None,
+                    metadata=payload.get(
+                        "metadata",
+                        {},
+                    ),
+                    authority_score=float(
+                        payload.get(
+                            "authority_score",
+                            0.5,
+                        )
+                    ),
+                )
+            )
+
+        return chunks
+
 
 assert isinstance(
     QdrantVectorStore(

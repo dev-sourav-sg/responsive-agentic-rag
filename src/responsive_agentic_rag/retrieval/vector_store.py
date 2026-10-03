@@ -18,3 +18,10 @@ class VectorStore(Protocol):
     ) -> list[RetrievalCandidate]:
         """Search for the most relevant chunks."""
         ...
+
+    def get_chunks(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> list[ChunkRecord]:
+        """Retrieve chunks by their IDs."""
+        ...

@@ -22,6 +22,16 @@ class FakeVectorStore:
     ) -> list[RetrievalCandidate]:
         return []
 
+    def get_chunks(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> list[ChunkRecord]:
+        return [
+            self.chunks[chunk_id]
+            for chunk_id in chunk_ids
+            if chunk_id in self.chunks
+        ]
+
 
 def test_fake_vector_store_implements_vector_store():
     store = FakeVectorStore()

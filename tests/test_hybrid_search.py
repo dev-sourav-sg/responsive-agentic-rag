@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from responsive_agentic_rag.models.knowledge import ChunkRecord
 from responsive_agentic_rag.models.retrieval import RetrievalCandidate
 from responsive_agentic_rag.retrieval.bm25_index import BM25Index
 from responsive_agentic_rag.retrieval.hybrid_search import HybridRetriever
@@ -10,10 +11,16 @@ from responsive_agentic_rag.retrieval.hybrid_search import HybridRetriever
 class FakeVectorStore:
     """Deterministic fake semantic store for hybrid retrieval tests."""
 
-    def __init__(self, results: Sequence[RetrievalCandidate]) -> None:
+    def __init__(
+        self,
+        results: Sequence[RetrievalCandidate],
+        chunks: Sequence[ChunkRecord] = (),
+    ) -> None:
         self.results = list(results)
+        self.chunks = list(chunks)
         self.last_query_vector = None
         self.last_limit = None
+        self.last_chunk_ids = None
 
     def search(
         self,
@@ -24,11 +31,26 @@ class FakeVectorStore:
         self.last_limit = limit
         return self.results[:limit]
 
+    def get_chunks(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> list[ChunkRecord]:
+        self.last_chunk_ids = list(chunk_ids)
+
+        return [
+            chunk
+            for chunk in self.chunks
+            if chunk.chunk_id in chunk_ids
+        ]
+
 
 class FakeBM25Index:
     """Deterministic fake BM25 index for hybrid retrieval tests."""
 
-    def __init__(self, results: Sequence[tuple[str, float]]) -> None:
+    def __init__(
+        self,
+        results: Sequence[tuple[str, float]],
+    ) -> None:
         self.results = list(results)
         self.last_query = None
         self.last_limit = None
@@ -61,6 +83,24 @@ def make_candidate(
     )
 
 
+def make_chunk(
+    chunk_id: str,
+) -> ChunkRecord:
+    return ChunkRecord(
+        chunk_id=chunk_id,
+        source_id=f"source-{chunk_id}",
+        record_id=f"record-{chunk_id}",
+        content=f"Content for {chunk_id}",
+        chunk_index=0,
+        token_count=3,
+        metadata={
+            "source_type": "document",
+            "source_location": f"document://{chunk_id}",
+        },
+        authority_score=0.5,
+    )
+
+
 def test_semantic_only_result_is_retained() -> None:
     semantic_results = [
         make_candidate("chunk-1", 0.95),
@@ -86,14 +126,20 @@ def test_semantic_only_result_is_retained() -> None:
     assert results[0].combined_score == pytest.approx(1 / 61)
 
 
-def test_lexical_only_result_is_not_fabricated() -> None:
+def test_lexical_only_result_is_resolved_to_complete_candidate() -> None:
     semantic_results = []
 
     lexical_results = [
         ("chunk-2", 4.25),
     ]
 
-    vector_store = FakeVectorStore(semantic_results)
+    vector_store = FakeVectorStore(
+        results=semantic_results,
+        chunks=[
+            make_chunk("chunk-2"),
+        ],
+    )
+
     bm25_index = FakeBM25Index(lexical_results)
 
     retriever = HybridRetriever(
@@ -106,9 +152,19 @@ def test_lexical_only_result_is_not_fabricated() -> None:
         query_vector=[0.1, 0.2, 0.3],
     )
 
-    # BM25 found the chunk, but currently does not provide enough
-    # information to construct a complete RetrievalCandidate.
-    assert results == []
+    assert len(results) == 1
+
+    result = results[0]
+
+    assert result.chunk_id == "chunk-2"
+    assert result.content == "Content for chunk-2"
+    assert result.source_id == "source-chunk-2"
+    assert result.source_type == "document"
+    assert result.source_location == "document://chunk-2"
+    assert result.semantic_score == 0.0
+    assert result.lexical_score == 4.25
+    assert result.combined_score == pytest.approx(1 / 61)
+    assert result.rank == 1
 
 
 def test_result_found_by_both_retrievers_is_merged() -> None:
@@ -173,20 +229,26 @@ def test_rrf_uses_original_ranks() -> None:
     assert len(results) == 2
 
     chunk_1 = next(
-        result for result in results
+        result
+        for result in results
         if result.chunk_id == "chunk-1"
     )
 
     chunk_2 = next(
-        result for result in results
+        result
+        for result in results
         if result.chunk_id == "chunk-2"
     )
 
     expected_chunk_1 = (1 / 61) + (1 / 62)
     expected_chunk_2 = (1 / 62) + (1 / 61)
 
-    assert chunk_1.combined_score == pytest.approx(expected_chunk_1)
-    assert chunk_2.combined_score == pytest.approx(expected_chunk_2)
+    assert chunk_1.combined_score == pytest.approx(
+        expected_chunk_1
+    )
+    assert chunk_2.combined_score == pytest.approx(
+        expected_chunk_2
+    )
 
 
 def test_limit_is_respected() -> None:
@@ -393,3 +455,35 @@ def test_final_ranks_are_assigned_after_rrf_sorting() -> None:
 
     assert [result.rank for result in results] == [1, 2]
     assert all(result.rank > 0 for result in results)
+
+
+def test_lexical_only_chunks_are_resolved_in_one_lookup() -> None:
+    lexical_results = [
+        ("chunk-1", 5.0),
+        ("chunk-2", 4.0),
+    ]
+
+    vector_store = FakeVectorStore(
+        results=[],
+        chunks=[
+            make_chunk("chunk-1"),
+            make_chunk("chunk-2"),
+        ],
+    )
+
+    bm25_index = FakeBM25Index(lexical_results)
+
+    retriever = HybridRetriever(
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+    )
+
+    retriever.search(
+        query="settlement",
+        query_vector=[0.1, 0.2, 0.3],
+    )
+
+    assert vector_store.last_chunk_ids == [
+        "chunk-1",
+        "chunk-2",
+    ]
