@@ -87,13 +87,52 @@ class QdrantVectorStore:
             points=points,
         )
 
-    def search(
-        self,
-        query_vector: Sequence[float],
-        limit: int = 10,
-    ) -> list[RetrievalCandidate]:
-        """Search for similar chunks."""
-        raise NotImplementedError
+    def search(self, query_vector: Sequence[float],limit: int = 10,) -> list[RetrievalCandidate]:
+        """Search for semantically similar chunks."""
+        if not query_vector:
+            raise ValueError("query_vector cannot be empty")
+
+        if limit < 1:
+            raise ValueError("limit must be greater than 0")
+
+        if len(query_vector) != self.vector_dimension:
+            raise ValueError(
+                f"query_vector dimension {len(query_vector)} "
+                f"does not match configured dimension "
+                f"{self.vector_dimension}"
+            )
+
+        results = self.client.query_points(
+            collection_name=self.collection_name,
+            query=list(query_vector),
+            limit=limit,
+            with_payload=True,
+        ).points
+
+        candidates: list[RetrievalCandidate] = []
+
+        for rank, result in enumerate(results, start=1):
+            payload = result.payload or {}
+
+            candidates.append(
+                RetrievalCandidate(
+                    chunk_id=str(payload["chunk_id"]),
+                    source_id=str(payload["source_id"]),
+                    source_type=payload["source_type"],
+                    source_location=str(payload["source_location"]),
+                    content=str(payload["content"]),
+                    metadata=dict(payload.get("metadata", {})),
+                    semantic_score=float(result.score),
+                    lexical_score=0.0,
+                    authority_score=float(
+                        payload.get("authority_score", 0.0)
+                    ),
+                    combined_score=float(result.score),
+                    rank=rank,
+                )
+            )
+
+        return candidates
 
     def _build_point_id(self, chunk_id: str) -> str:
         """Create a deterministic UUID for a Qdrant point."""
