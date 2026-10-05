@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from responsive_agentic_rag.models.retrieval import RetrievalCandidate
 from responsive_agentic_rag.retrieval.bm25_index import BM25Index
 from responsive_agentic_rag.retrieval.vector_store import VectorStore
+from responsive_agentic_rag.retrieval.reranker import Reranker
 
 
 class HybridRetriever:
@@ -13,6 +14,7 @@ class HybridRetriever:
         vector_store: VectorStore,
         bm25_index: BM25Index,
         rrf_k: int = 60,
+        reranker: Reranker | None = None,
     ) -> None:
         if rrf_k < 1:
             raise ValueError("rrf_k must be greater than 0")
@@ -20,6 +22,7 @@ class HybridRetriever:
         self._vector_store = vector_store
         self._bm25_index = bm25_index
         self._rrf_k = rrf_k
+        self._reranker = reranker
 
     def search(
         self,
@@ -53,9 +56,18 @@ class HybridRetriever:
             limit=lexical_limit,
         )
 
-        return self._fuse_results(
+        fused_candidates = self._fuse_results(
             semantic_results=semantic_results,
             lexical_results=lexical_results,
+            limit=limit,
+        )
+
+        if self._reranker is None:
+            return fused_candidates
+
+        return self._reranker.rerank(
+            query=query,
+            candidates=fused_candidates,
             limit=limit,
         )
 

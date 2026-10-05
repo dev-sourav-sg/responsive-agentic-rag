@@ -6,6 +6,9 @@ from responsive_agentic_rag.models.knowledge import ChunkRecord
 from responsive_agentic_rag.models.retrieval import RetrievalCandidate
 from responsive_agentic_rag.retrieval.bm25_index import BM25Index
 from responsive_agentic_rag.retrieval.hybrid_search import HybridRetriever
+from responsive_agentic_rag.retrieval.deterministic_reranker import (
+    DeterministicReranker,
+)
 
 
 class FakeVectorStore:
@@ -487,3 +490,71 @@ def test_lexical_only_chunks_are_resolved_in_one_lookup() -> None:
         "chunk-1",
         "chunk-2",
     ]
+
+def test_hybrid_retriever_applies_reranker():
+    candidates = [
+        make_candidate("chunk-a", 0.9).model_copy(
+            update={"authority_score": 0.2}
+        ),
+        make_candidate("chunk-b", 0.7).model_copy(
+            update={"authority_score": 0.9}
+        ),
+    ]
+
+    vector_store = FakeVectorStore(results=candidates)
+    bm25_index = FakeBM25Index(
+        results=[
+            ("chunk-a", 0.2),
+            ("chunk-b", 0.8),
+        ]
+    )
+
+    reranker = DeterministicReranker(
+    semantic_weight=0.3,
+    lexical_weight=0.3,
+    authority_weight=0.4,
+    )
+
+    retriever = HybridRetriever(
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        reranker=reranker,
+    )
+
+    results = retriever.search(
+        query="settlement policy",
+        query_vector=[0.1, 0.2, 0.3],
+        limit=2,
+    )
+
+    assert results[0].chunk_id == "chunk-b"
+    assert results[0].rank == 1
+    assert "reranker_score" in results[0].metadata
+
+
+def test_hybrid_retriever_without_reranker_preserves_t017_behavior():
+    candidates = [
+        make_candidate("chunk-a", 0.9),
+        make_candidate("chunk-b", 0.7),
+    ]
+
+    vector_store = FakeVectorStore(results=candidates)
+    bm25_index = FakeBM25Index(
+        results=[
+            ("chunk-a", 0.2),
+            ("chunk-b", 0.8),
+        ]
+    )
+
+    retriever = HybridRetriever(
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+    )
+
+    results = retriever.search(
+        query="settlement policy",
+        query_vector=[0.1, 0.2, 0.3],
+        limit=2,
+    )
+
+    assert "reranker_score" not in results[0].metadata
