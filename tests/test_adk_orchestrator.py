@@ -173,3 +173,34 @@ def test_answer_retrieves_evidence_exactly_once():
     )
 
     assert retrieval_tool.call_count == 1
+
+def test_answer_does_not_synthesize_when_evidence_is_insufficient():
+    retrieval_tool = FakeRetrievalTool()
+
+    retrieval_tool.retrieve = lambda query: EvidenceSet(
+        query_id=query.query_text,
+        sufficiency_assessment=False,
+        supporting_sources=[],
+        candidates=[],
+    )
+
+    class FailingAnswerSynthesizer:
+        def synthesize(self, evidence):
+            raise AssertionError(
+                "Answer synthesis must not run when evidence is insufficient."
+            )
+
+    orchestrator = ADKRetrievalOrchestrator(
+        retrieval_tool=retrieval_tool,
+        answer_synthesizer=FailingAnswerSynthesizer(),
+        model="test-model",
+    )
+
+    result = orchestrator.answer(
+        "What is the policy for an unsupported scenario?"
+    )
+
+    assert isinstance(result, AnswerRecord)
+    assert result.grounding_status == "insufficient_evidence"
+    assert result.citations == []
+    assert result.source_ids == []

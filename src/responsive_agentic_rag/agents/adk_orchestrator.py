@@ -1,5 +1,9 @@
 from google.adk.agents import Agent
 
+from responsive_agentic_rag.agents.answer_assembler import (
+    AnswerAssembler,
+    AnswerAssemblerContract,
+)
 from responsive_agentic_rag.agents.answer_synthesizer import (
     AnswerSynthesizerContract,
 )
@@ -9,34 +13,35 @@ from responsive_agentic_rag.models.retrieval import (
     EvidenceSet,
     RetrievalQuery,
 )
+from responsive_agentic_rag.retrieval.no_answer_guard import (
+    InsufficientEvidenceError,
+    NoAnswerGuard,
+)
 
 
 class ADKRetrievalOrchestrator:
-    """Google ADK orchestration boundary for grounded retrieval."""
-
     def __init__(
         self,
         retrieval_tool: RetrievalToolContract,
         answer_synthesizer: AnswerSynthesizerContract,
         model: str,
+        no_answer_guard: NoAnswerGuard | None = None,
+        answer_assembler: AnswerAssemblerContract | None = None,
     ) -> None:
         self._retrieval_tool = retrieval_tool
         self._answer_synthesizer = answer_synthesizer
         self._model = model
+        self._no_answer_guard = no_answer_guard or NoAnswerGuard()
+        self._answer_assembler = answer_assembler or AnswerAssembler()
 
     def _retrieve(self, query: str) -> EvidenceSet:
-        """Execute deterministic retrieval and return the evidence set."""
-
         retrieval_query = RetrievalQuery(
             query_text=query,
             max_results=10,
         )
-
         return self._retrieval_tool.retrieve(retrieval_query)
 
     def retrieve_evidence(self, query: str) -> dict:
-        """Expose deterministic retrieval to the ADK agent."""
-
         evidence = self._retrieve(query)
 
         return {
@@ -58,15 +63,23 @@ class ADKRetrievalOrchestrator:
         }
 
     def answer(self, query: str) -> AnswerRecord:
-        """Run deterministic retrieval followed by grounded synthesis."""
-
         evidence = self._retrieve(query)
+
+        try:
+            self._no_answer_guard.enforce(evidence)
+        except InsufficientEvidenceError:
+            return self._answer_assembler.assemble(
+                answer_text=(
+                    "I don't have sufficient evidence in the available "
+                    "knowledge sources to answer this question."
+                ),
+                candidates=[],
+                grounding_status="insufficient_evidence",
+            )
 
         return self._answer_synthesizer.synthesize(evidence)
 
     def build_agent(self) -> Agent:
-        """Build the Google ADK agent with retrieval as its tool."""
-
         return Agent(
             name="responsive_rag_agent",
             description=(
