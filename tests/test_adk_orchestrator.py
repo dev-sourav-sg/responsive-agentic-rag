@@ -7,6 +7,7 @@ from responsive_agentic_rag.models.retrieval import (
     RetrievalCandidate,
     RetrievalQuery,
 )
+from responsive_agentic_rag.agents.answer_assembler import AnswerAssembler
 
 
 class FakeRetrievalTool:
@@ -147,7 +148,9 @@ def test_answer_returns_no_answer_when_evidence_is_insufficient():
 
     orchestrator = ADKRetrievalOrchestrator(
         retrieval_tool=retrieval_tool,
-        answer_synthesizer=DeterministicAnswerSynthesizer(),
+        answer_synthesizer=DeterministicAnswerSynthesizer(
+        assembler=AnswerAssembler()
+        ),
         model="test-model",
     )
 

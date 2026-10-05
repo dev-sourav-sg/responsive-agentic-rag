@@ -1,65 +1,36 @@
 from typing import Protocol, runtime_checkable
 
-from responsive_agentic_rag.models.retrieval import (
-    AnswerRecord,
-    EvidenceSet,
-)
+from responsive_agentic_rag.agents.answer_assembler import AnswerAssemblerContract
+from responsive_agentic_rag.models.retrieval import AnswerRecord, EvidenceSet
 
 
 @runtime_checkable
 class AnswerSynthesizerContract(Protocol):
-    """Contract for converting retrieved evidence into a grounded answer."""
-
     def synthesize(self, evidence: EvidenceSet) -> AnswerRecord:
-        """Synthesize an answer from retrieved evidence."""
         ...
 
 
 class DeterministicAnswerSynthesizer:
-    """Initial deterministic answer synthesis boundary.
-
-    This component does not use an LLM. It establishes the contract
-    between retrieved evidence and the final AnswerRecord.
-    """
+    def __init__(self, assembler: AnswerAssemblerContract) -> None:
+        self._assembler = assembler
 
     def synthesize(self, evidence: EvidenceSet) -> AnswerRecord:
-        """Create a grounded or insufficient-evidence answer."""
-
         if not evidence.sufficiency_assessment:
-            return AnswerRecord(
+            return self._assembler.assemble(
                 answer_text=(
                     "I don't have sufficient evidence in the available "
                     "knowledge sources to answer this question."
                 ),
-                citations=[],
-                source_ids=[],
+                candidates=evidence.candidates,
                 grounding_status="insufficient_evidence",
-                missing_evidence_note=(
-                    "The retrieved evidence did not meet the configured "
-                    "sufficiency threshold."
-                ),
             )
-
-        citations = [
-            candidate.source_location
-            for candidate in evidence.candidates
-        ]
-
-        source_ids = list(
-            dict.fromkeys(
-                candidate.source_id
-                for candidate in evidence.candidates
-            )
-        )
 
         evidence_text = "\n".join(
-            f"- {candidate.content}"
-            for candidate in evidence.candidates
+            f"- {candidate.content}" for candidate in evidence.candidates
         )
 
-        return AnswerRecord(
+        return self._assembler.assemble(
             answer_text=evidence_text,
-            citations=list(dict.fromkeys(citations)),
-            source_ids=source_ids,
+            candidates=evidence.candidates,
             grounding_status="grounded",
         )
