@@ -1,52 +1,60 @@
 from collections.abc import Sequence
 
+from responsive_agentic_rag.models.knowledge import ChunkRecord
 from responsive_agentic_rag.models.retrieval import RetrievalCandidate
+from responsive_agentic_rag.retrieval.authority_scorer import AuthorityScorer
 from responsive_agentic_rag.retrieval.bm25_index import BM25Index
-from responsive_agentic_rag.retrieval.vector_store import VectorStore
 from responsive_agentic_rag.retrieval.reranker import Reranker
+from responsive_agentic_rag.retrieval.vector_store import VectorStore
 
 
 class HybridRetriever:
-    """Combine semantic and lexical retrieval using Reciprocal Rank Fusion."""
+    """Combines semantic and lexical retrieval using reciprocal rank fusion."""
 
     def __init__(
         self,
         vector_store: VectorStore,
         bm25_index: BM25Index,
-        rrf_k: int = 60,
         reranker: Reranker | None = None,
+        authority_scorer: AuthorityScorer | None = None,
+        rrf_k: int = 60,
     ) -> None:
         if rrf_k < 1:
-            raise ValueError("rrf_k must be greater than 0")
+            raise ValueError("rrf_k must be >= 1")
 
         self._vector_store = vector_store
         self._bm25_index = bm25_index
-        self._rrf_k = rrf_k
         self._reranker = reranker
+        self._authority_scorer = authority_scorer
+        self._rrf_k = rrf_k
 
     def search(
         self,
         query: str,
         query_vector: Sequence[float],
         limit: int = 10,
-        semantic_limit: int = 30,
-        lexical_limit: int = 30,
+        semantic_limit: int | None = None,
+        lexical_limit: int | None = None,
     ) -> list[RetrievalCandidate]:
-        """Run semantic and lexical retrieval and fuse results using RRF."""
-
         if not query.strip():
-            raise ValueError("query cannot be empty")
+            raise ValueError("query must not be empty")
+
+        if not query_vector:
+            raise ValueError("query_vector must not be empty")
 
         if limit < 1:
-            raise ValueError("limit must be greater than 0")
+            raise ValueError("limit must be >= 1")
+
+        semantic_limit = semantic_limit or limit
+        lexical_limit = lexical_limit or limit
 
         if semantic_limit < 1:
-            raise ValueError("semantic_limit must be greater than 0")
+            raise ValueError("semantic_limit must be >= 1")
 
         if lexical_limit < 1:
-            raise ValueError("lexical_limit must be greater than 0")
+            raise ValueError("lexical_limit must be >= 1")
 
-        semantic_results = self._vector_store.search(
+        semantic_candidates = self._vector_store.search(
             query_vector=query_vector,
             limit=semantic_limit,
         )
@@ -56,167 +64,191 @@ class HybridRetriever:
             limit=lexical_limit,
         )
 
-        fused_candidates = self._fuse_results(
-            semantic_results=semantic_results,
+        lexical_candidates = self._resolve_lexical_candidates(
             lexical_results=lexical_results,
-            limit=limit,
+            semantic_candidates=semantic_candidates,
         )
 
-        if self._reranker is None:
-            return fused_candidates
-
-        return self._reranker.rerank(
-            query=query,
-            candidates=fused_candidates,
-            limit=limit,
+        fused_candidates = self._rrf_fuse(
+            semantic_candidates=semantic_candidates,
+            lexical_candidates=lexical_candidates,
         )
 
-    def _fuse_results(
-        self,
-        semantic_results: Sequence[RetrievalCandidate],
-        lexical_results: Sequence[tuple[str, float]],
-        limit: int,
-    ) -> list[RetrievalCandidate]:
-        """Merge semantic and lexical results using Reciprocal Rank Fusion."""
+        if self._authority_scorer is not None:
+            fused_candidates = [
+                self._authority_scorer.enrich_candidate(candidate)
+                for candidate in fused_candidates
+            ]
 
-        candidates: dict[str, RetrievalCandidate] = {}
-
-        semantic_ranks: dict[str, int] = {}
-        lexical_ranks: dict[str, int] = {}
-
-        # ------------------------------------------------------------------
-        # Semantic retrieval results
-        # ------------------------------------------------------------------
-
-        for rank, candidate in enumerate(
-            semantic_results,
-            start=1,
-        ):
-            semantic_ranks[candidate.chunk_id] = rank
-
-            candidates[candidate.chunk_id] = candidate.model_copy(
-                update={
-                    "semantic_score": candidate.semantic_score,
-                    "lexical_score": 0.0,
-                    "combined_score": 0.0,
-                    "rank": 0,
-                    "metadata": {
-                        **candidate.metadata,
-                        "semantic_rank": rank,
-                    },
-                }
+        if self._reranker is not None:
+            return self._reranker.rerank(
+                query=query,
+                candidates=fused_candidates,
+                limit=limit,
             )
 
-        # ------------------------------------------------------------------
-        # Lexical retrieval results
-        # ------------------------------------------------------------------
+        return fused_candidates[:limit]
 
-        lexical_only_ids = [
-            chunk_id
-            for chunk_id, _ in lexical_results
-            if chunk_id not in candidates
-        ]
+    def _resolve_lexical_candidates(
+        self,
+        lexical_results: Sequence[tuple[str, float]],
+        semantic_candidates: Sequence[RetrievalCandidate],
+    ) -> list[RetrievalCandidate]:
+        """
+        Resolve BM25 results into RetrievalCandidates.
 
-        resolved_chunks = self._vector_store.get_chunks(
-            lexical_only_ids
-        )
+        If a chunk already exists in semantic retrieval results, reuse that
+        candidate and add its lexical score. Only BM25-only chunks require
+        a VectorStore lookup.
+        """
+        if not lexical_results:
+            return []
 
-        resolved_by_id = {
-            chunk.chunk_id: chunk
-            for chunk in resolved_chunks
+        semantic_by_id = {
+            candidate.chunk_id: candidate
+            for candidate in semantic_candidates
         }
 
-        for rank, (chunk_id, lexical_score) in enumerate(
-            lexical_results,
-            start=1,
-        ):
-            lexical_ranks[chunk_id] = rank
+        unresolved_ids = [
+            chunk_id
+            for chunk_id, _ in lexical_results
+            if chunk_id not in semantic_by_id
+        ]
 
-            # Chunk was already found by semantic retrieval.
-            if chunk_id in candidates:
-                existing = candidates[chunk_id]
+        chunks_by_id: dict[str, ChunkRecord] = {}
 
-                candidates[chunk_id] = existing.model_copy(
-                    update={
-                        "lexical_score": lexical_score,
-                        "metadata": {
-                            **existing.metadata,
-                            "lexical_rank": rank,
-                        },
-                    }
+        if unresolved_ids:
+            chunks = self._vector_store.get_chunks(unresolved_ids)
+
+            chunks_by_id = {
+                chunk.chunk_id: chunk
+                for chunk in chunks
+            }
+
+        candidates: list[RetrievalCandidate] = []
+
+        for chunk_id, lexical_score in lexical_results:
+            semantic_candidate = semantic_by_id.get(chunk_id)
+
+            if semantic_candidate is not None:
+                candidates.append(
+                    semantic_candidate.model_copy(
+                        update={
+                            "lexical_score": lexical_score,
+                        }
+                    )
                 )
-
                 continue
 
-            # Chunk was found only by BM25. Resolve its complete
-            # ChunkRecord from the vector store.
-            chunk = resolved_by_id.get(chunk_id)
+            chunk = chunks_by_id.get(chunk_id)
 
             if chunk is None:
                 continue
 
-            source_type = chunk.metadata.get("source_type")
-
-            if source_type not in {"document", "website"}:
-                continue
-
-            source_location = chunk.metadata.get(
-                "source_location"
+            candidates.append(
+                RetrievalCandidate(
+                    chunk_id=chunk.chunk_id,
+                    source_id=chunk.source_id,
+                    source_type=chunk.metadata.get(
+                        "source_type",
+                        "document",
+                    ),
+                    source_location=chunk.metadata.get(
+                        "source_location",
+                        "",
+                    ),
+                    content=chunk.content,
+                    metadata=chunk.metadata,
+                    semantic_score=0.0,
+                    lexical_score=lexical_score,
+                    authority_score=chunk.authority_score,
+                    combined_score=0.0,
+                    rank=0,
+                )
             )
 
-            if not source_location:
+        return candidates
+
+    def _rrf_fuse(
+        self,
+        semantic_candidates: Sequence[RetrievalCandidate],
+        lexical_candidates: Sequence[RetrievalCandidate],
+    ) -> list[RetrievalCandidate]:
+        """
+        Fuse semantic and lexical rankings using Reciprocal Rank Fusion.
+
+        RRF score:
+
+            1 / (k + semantic_rank)
+            +
+            1 / (k + lexical_rank)
+
+        Authority is deliberately NOT included here. Authority is applied
+        after retrieval fusion so that source authority does not distort
+        the underlying semantic/lexical retrieval ranks.
+        """
+        candidates_by_id: dict[str, RetrievalCandidate] = {}
+
+        # Preserve semantic candidates first.
+        for candidate in semantic_candidates:
+            candidates_by_id[candidate.chunk_id] = candidate
+
+        # Merge lexical candidates.
+        #
+        # If the chunk already exists in semantic results, preserve all
+        # semantic/provenance fields and add the lexical score.
+        for candidate in lexical_candidates:
+            existing = candidates_by_id.get(candidate.chunk_id)
+
+            if existing is None:
+                candidates_by_id[candidate.chunk_id] = candidate
                 continue
 
-            candidates[chunk_id] = RetrievalCandidate(
-                chunk_id=chunk.chunk_id,
-                source_id=chunk.source_id,
-                source_type=source_type,
-                source_location=source_location,
-                content=chunk.content,
-                metadata={
-                    **chunk.metadata,
-                    "lexical_rank": rank,
-                },
-                semantic_score=0.0,
-                lexical_score=float(lexical_score),
-                combined_score=0.0,
-                rank=0,
+            candidates_by_id[candidate.chunk_id] = existing.model_copy(
+                update={
+                    "lexical_score": candidate.lexical_score,
+                }
             )
 
-        # ------------------------------------------------------------------
-        # Calculate RRF
-        # ------------------------------------------------------------------
+        scores: dict[str, float] = {
+            chunk_id: 0.0
+            for chunk_id in candidates_by_id
+        }
+
+        # Semantic contribution.
+        for rank, candidate in enumerate(
+            semantic_candidates,
+            start=1,
+        ):
+            scores[candidate.chunk_id] += 1.0 / (
+                self._rrf_k + rank
+            )
+
+        # Lexical contribution.
+        for rank, candidate in enumerate(
+            lexical_candidates,
+            start=1,
+        ):
+            scores[candidate.chunk_id] += 1.0 / (
+                self._rrf_k + rank
+            )
 
         fused_candidates: list[RetrievalCandidate] = []
 
-        for chunk_id, candidate in candidates.items():
-            semantic_rank = semantic_ranks.get(chunk_id)
-            lexical_rank = lexical_ranks.get(chunk_id)
-
-            rrf_score = 0.0
-
-            if semantic_rank is not None:
-                rrf_score += 1.0 / (
-                    self._rrf_k + semantic_rank
-                )
-
-            if lexical_rank is not None:
-                rrf_score += 1.0 / (
-                    self._rrf_k + lexical_rank
-                )
-
+        for candidate in candidates_by_id.values():
             fused_candidates.append(
                 candidate.model_copy(
                     update={
-                        "combined_score": rrf_score,
+                        "combined_score": scores[
+                            candidate.chunk_id
+                        ],
                     }
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Deterministic ordering
-        # ------------------------------------------------------------------
-
+        # Deterministic ordering:
+        # 1. Higher RRF score first
+        # 2. Chunk ID as stable tie-breaker
         fused_candidates.sort(
             key=lambda candidate: (
                 -candidate.combined_score,
@@ -224,19 +256,14 @@ class HybridRetriever:
             )
         )
 
-        # Assign final rank after RRF ordering.
-        ranked_candidates: list[RetrievalCandidate] = []
-
-        for rank, candidate in enumerate(
-            fused_candidates[:limit],
-            start=1,
-        ):
-            ranked_candidates.append(
-                candidate.model_copy(
-                    update={
-                        "rank": rank,
-                    }
-                )
+        return [
+            candidate.model_copy(
+                update={
+                    "rank": rank,
+                }
             )
-
-        return ranked_candidates
+            for rank, candidate in enumerate(
+                fused_candidates,
+                start=1,
+            )
+        ]

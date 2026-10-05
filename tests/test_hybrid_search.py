@@ -9,6 +9,7 @@ from responsive_agentic_rag.retrieval.hybrid_search import HybridRetriever
 from responsive_agentic_rag.retrieval.deterministic_reranker import (
     DeterministicReranker,
 )
+from responsive_agentic_rag.retrieval.authority_scorer import AuthorityScorer
 
 
 class FakeVectorStore:
@@ -558,3 +559,134 @@ def test_hybrid_retriever_without_reranker_preserves_t017_behavior():
     )
 
     assert "reranker_score" not in results[0].metadata
+
+def test_hybrid_retriever_applies_authority_scorer_after_rrf():
+    candidate = make_candidate(
+        "chunk-authority",
+        semantic_score=0.95,
+    ).model_copy(
+        update={
+            "authority_score": 0.8,
+            "metadata": {
+                "approval_status": "draft",
+                "source_type": "document",
+            },
+        }
+    )
+
+    vector_store = FakeVectorStore(
+        results=[candidate]
+    )
+
+    bm25_index = FakeBM25Index(
+        results=[
+            ("chunk-authority", 5.0),
+        ]
+    )
+
+    retriever = HybridRetriever(
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        authority_scorer=AuthorityScorer(),
+    )
+
+    results = retriever.search(
+        query="settlement policy",
+        query_vector=[0.1, 0.2, 0.3],
+        limit=1,
+    )
+
+    assert len(results) == 1
+
+    # Base authority = 0.8
+    # draft multiplier = 0.5
+    # document multiplier = 1.0
+    assert results[0].authority_score == pytest.approx(0.4)
+
+    # RRF itself should remain unchanged.
+    assert results[0].combined_score == pytest.approx(
+        (1 / 61) + (1 / 61)
+    )
+
+
+def test_hybrid_retriever_applies_authority_before_reranking():
+    candidates = [
+        make_candidate(
+            "chunk-a",
+            semantic_score=0.9,
+        ).model_copy(
+            update={
+                "authority_score": 0.8,
+                "metadata": {
+                    "approval_status": "draft",
+                    "source_type": "document",
+                },
+            }
+        ),
+        make_candidate(
+            "chunk-b",
+            semantic_score=0.7,
+        ).model_copy(
+            update={
+                "authority_score": 0.9,
+                "metadata": {
+                    "approval_status": "approved",
+                    "source_type": "document",
+                },
+            }
+        ),
+    ]
+
+    vector_store = FakeVectorStore(
+        results=candidates
+    )
+
+    bm25_index = FakeBM25Index(
+        results=[
+            ("chunk-a", 0.8),
+            ("chunk-b", 0.7),
+        ]
+    )
+
+    reranker = DeterministicReranker(
+        semantic_weight=0.3,
+        lexical_weight=0.3,
+        authority_weight=0.4,
+    )
+
+    retriever = HybridRetriever(
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+        reranker=reranker,
+        authority_scorer=AuthorityScorer(),
+    )
+
+    results = retriever.search(
+        query="settlement policy",
+        query_vector=[0.1, 0.2, 0.3],
+        limit=2,
+    )
+
+    assert len(results) == 2
+
+    chunk_a = next(
+        result
+        for result in results
+        if result.chunk_id == "chunk-a"
+    )
+
+    chunk_b = next(
+        result
+        for result in results
+        if result.chunk_id == "chunk-b"
+    )
+
+    # chunk-a: 0.8 × draft(0.5) × document(1.0) = 0.4
+    assert chunk_a.authority_score == pytest.approx(0.4)
+
+    # chunk-b: 0.9 × approved(1.0) × document(1.0) = 0.9
+    assert chunk_b.authority_score == pytest.approx(0.9)
+
+    # Reranker receives the enriched authority values.
+    assert "reranker_score" in chunk_a.metadata
+    assert "reranker_score" in chunk_b.metadata
