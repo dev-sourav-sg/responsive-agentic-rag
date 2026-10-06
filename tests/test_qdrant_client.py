@@ -14,5 +14,4 @@ def test_create_qdrant_client_uses_application_settings():
         mock_client.assert_called_once_with(
             host="localhost",
             port=6333,
-            api_key=None,
         )

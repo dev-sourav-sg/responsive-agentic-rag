@@ -43,3 +43,9 @@ logs/
 
 # Google ADK / local runtime artifacts
 .adk/
+
+# Local Qdrant persistence
+qdrant_data/
+
+# Generated demo corpus
+data/demo_corpus/

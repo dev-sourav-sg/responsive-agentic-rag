@@ -8,5 +8,4 @@ def create_qdrant_client() -> QdrantClient:
     return QdrantClient(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
-        api_key=settings.qdrant_api_key,
     )
